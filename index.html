@@ -4,8 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Open Touch</title>
-    <!-- Подключаем библиотеку Paho MQTT -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js" type="text/javascript"></script>
+    <script src="https://cloudflare.com" type="text/javascript"></script>
     <style>
         * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
         body {
@@ -22,12 +21,15 @@
             width: 100%; padding: 14px; border-radius: 10px; border: 1px solid #3a3a3c;
             background: #2c2c2e; color: white; font-size: 18px; text-align: center; margin-bottom: 15px; outline: none;
         }
-        input:focus { border-color: #ff4a75; }
         button {
             width: 100%; padding: 15px; border-radius: 10px; border: none;
             background: #ff4a75; color: white; font-size: 16px; font-weight: bold; cursor: pointer;
         }
         button:active { background: #e03e64; }
+        
+        /* Кнопка активации звука/вибро для обхода блокировок */
+        #activation-btn { background: #00fff0; color: #121214; display: none; margin-top: 20px; }
+
         .touch-zone {
             display: none; width: 220px; height: 220px; border-radius: 50%;
             background: radial-gradient(circle, #ff4a75 0%, #b5179e 100%);
@@ -35,9 +37,16 @@
             justify-content: center; align-items: center; font-size: 20px; font-weight: bold;
             transition: transform 0.1s, box-shadow 0.1s; touch-action: none; cursor: pointer;
         }
+        /* Анимация пульсации при соединении */
         .touch-zone.active {
-            transform: scale(0.96); box-shadow: 0 0 60px #00fff0, inset 0 0 25px rgba(255,255,255,0.5);
+            transform: scale(0.96); 
+            box-shadow: 0 0 60px #00fff0, inset 0 0 25px rgba(255,255,255,0.5);
             background: radial-gradient(circle, #00fff0 0%, #0077b6 100%);
+            animation: pulse-glow 1s infinite alternate;
+        }
+        @keyframes pulse-glow {
+            0% { box-shadow: 0 0 40px #00fff0; }
+            100% { box-shadow: 0 0 75px #ff4a75; }
         }
         .status { color: #8e8e93; font-size: 16px; min-height: 24px; font-weight: 500; }
     </style>
@@ -52,15 +61,16 @@
     <div id="setup-screen" class="card">
         <p style="margin: 0; color: #aeaeae;">Ваш ID подключения:</p>
         <div id="my-code" class="code-display">...</div>
-        <p style="color:#8e8e93; font-size:14px; margin-bottom: 20px;">Передайте его второму пользователю или введите его ID ниже:</p>
         <input type="number" id="partner-code" placeholder="Введите ID пользователя" pattern="\d*">
         <button onclick="connectToPartner()">Подключиться</button>
     </div>
 
     <!-- Экран взаимодействия -->
     <div id="interaction-screen" style="display: none;">
-        <p class="status" id="status-text">Установка защищенного соединения...</p>
+        <p class="status" id="status-text">Установка соединения...</p>
         <div id="touch-pad" class="touch-zone">ДЕРЖИ</div>
+        <!-- Кнопка разблокировки сенсоров браузера -->
+        <button id="activation-btn" onclick="activateSensors()">Разблокировать вибро/звук</button>
     </div>
 </div>
 
@@ -68,83 +78,82 @@
     const myRoomCode = Math.floor(10000 + Math.random() * 90000).toString();
     document.getElementById('my-code').innerText = myRoomCode;
 
-    let mqttClient;
-    let currentTopic = "";
-    let isConnected = false;
-
-    // Список серверов (Основной и Резервный)
+    let mqttClient; let currentTopic = ""; let isConnected = false;
     const brokers = [
-        { host: "broker.hivemq.com", port: 8884, path: "/mqtt" },
+        { host: "://hivemq.com", port: 8884, path: "/mqtt" },
         { host: "broker.emqx.io", port: 8084, path: "/mqtt" }
     ];
     let currentBrokerIndex = 0;
 
+    // Генерируем нежный звук для iOS/Android через Web Audio API (работает везде)
+    let audioCtx = null;
+    function playHeartbeatSound() {
+        try {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            let osc = audioCtx.createOscillator();
+            let gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(60, audioCtx.currentTime); // Низкая частота (бас)
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+        } catch(e) { console.log(e); }
+    }
+
+    // Функция, которую пользователь ОБЯЗАН кликнуть для активации вибро и звука
+    function activateSensors() {
+        if (navigator.vibrate) navigator.vibrate(100); // Тестовый виброотклик
+        playHeartbeatSound(); // Тестовый звук
+        document.getElementById('activation-btn').style.display = 'none';
+        document.getElementById('status-text').innerText = "Готово! Коснитесь экрана одновременно.";
+    }
+
     function initMQTT(roomCode) {
         currentTopic = "opentouch/room/" + roomCode;
+        document.getElementById('setup-screen').style.style = 'none';
         document.getElementById('setup-screen').style.display = 'none';
         document.getElementById('interaction-screen').style.display = 'block';
         
         const broker = brokers[currentBrokerIndex];
-        console.log("Подключение к серверу: " + broker.host);
-        
         mqttClient = new Paho.Client(broker.host, broker.port, broker.path, "client_" + Math.random().toString(36).substring(7));
         
-        mqttClient.onConnectionLost = (responseObject) => {
-            document.getElementById('status-text').innerText = "Потеря связи. Переподключение...";
-            isConnected = false;
-            setTimeout(() => initMQTT(roomCode), 3000);
-        };
-
-        mqttClient.onMessageArrived = (message) => {
+        mqttClient.onConnectionLost = () => { isConnected = false; setTimeout(() => initMQTT(roomCode), 3000); };
+        mqttClient.onMessageArrived = (msg) => {
             try {
-                const data = JSON.parse(message.payloadString);
-                if (data.sender !== myRoomCode) {
-                    handlePartnerTouch(data.action);
-                }
-            } catch(e) { console.error(e); }
+                const data = JSON.parse(msg.payloadString);
+                if (data.sender !== myRoomCode) handlePartnerTouch(data.action);
+            } catch(e) {}
         };
 
         mqttClient.connect({
             onSuccess: () => {
                 mqttClient.subscribe(currentTopic);
                 document.getElementById('touch-pad').style.display = 'flex';
-                document.getElementById('status-text').innerText = "Успешно подключено! Коснитесь экрана одновременно.";
+                document.getElementById('activation-btn').style.display = 'block'; // Показываем кнопку активации
+                document.getElementById('status-text').innerText = "Нажмите кнопку активации ниже:";
                 isConnected = true;
             },
-            onFailure: (err) => {
-                console.log("Ошибка подключения к " + broker.host, err);
-                // Если первый сервер не ответил, переключаемся на резервный
+            onFailure: () => {
                 currentBrokerIndex = (currentBrokerIndex + 1) % brokers.length;
-                document.getElementById('status-text').innerText = "Смена сервера связи...";
                 setTimeout(() => initMQTT(roomCode), 1500);
             },
-            useSSL: true,
-            timeout: 5
+            useSSL: true, timeout: 5
         });
     }
 
     function connectToPartner() {
         const partnerCode = document.getElementById('partner-code').value.trim();
-        if (!partnerCode) {
-            alert("Пожалуйста, введите ID другого пользователя!");
-            return;
-        }
-        const finalRoom = myRoomCode < partnerCode ? myRoomCode + partnerCode : partnerCode + myRoomCode;
-        initMQTT(finalRoom);
+        if (!partnerCode) return alert("Введите ID!");
+        initMQTT(myRoomCode < partnerCode ? myRoomCode + partnerCode : partnerCode + myRoomCode);
     }
 
     const touchPad = document.getElementById('touch-pad');
-    let iamTouching = false;
-    let partnerTouching = false;
+    let iamTouching = false; let partnerTouching = false;
 
     function sendTouchEvent(actionType) {
         if (!isConnected) return;
-        const message = new Paho.Message(JSON.stringify({
-            sender: myRoomCode,
-            action: actionType
-        }));
-        message.destinationName = currentTopic;
-        mqttClient.send(message);
+        mqttClient.send(new Paho.Message(JSON.stringify({ sender: myRoomCode, action: actionType })));
     }
 
     function handlePartnerTouch(action) {
@@ -158,13 +167,12 @@
             touchPad.classList.add('active');
             startVibrationLoop();
         } else if (iamTouching) {
-            document.getElementById('status-text').innerText = "Вы коснулись... Ожидание пользователя.";
+            document.getElementById('status-text').innerText = "Вы коснулись... Ожидание ответа.";
             stopVibrationLoop();
         } else if (partnerTouching) {
-            document.getElementById('status-text').innerText = "Пользователь касается экрана! Ответьте ему!";
+            document.getElementById('status-text').innerText = "Второй пользователь на связи! Нажмите!";
             touchPad.classList.add('active');
             stopVibrationLoop();
-            if (navigator.vibrate) navigator.vibrate(80);
         } else {
             document.getElementById('status-text').innerText = "Ожидание прикосновения...";
             touchPad.classList.remove('active');
@@ -175,12 +183,14 @@
     let vibInterval;
     function startVibrationLoop() {
         if (vibInterval) clearInterval(vibInterval);
-        if (navigator.vibrate) {
-            navigator.vibrate(200); 
-            vibInterval = setInterval(() => {
-                navigator.vibrate(200);
-            }, 1000);
-        }
+        
+        const pulse = () => {
+            if (navigator.vibrate) navigator.vibrate(150); // Вибрация для Android
+            playHeartbeatSound(); // Саунд-эффект пульса для iOS
+        };
+        
+        pulse();
+        vibInterval = setInterval(pulse, 1000);
     }
 
     function stopVibrationLoop() {
@@ -188,34 +198,11 @@
         if (navigator.vibrate) navigator.vibrate(0);
     }
 
-    // События для мобилок
-    touchPad.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        iamTouching = true;
-        sendTouchEvent("start");
-        checkVibration();
-    });
-
-    touchPad.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        iamTouching = false;
-        sendTouchEvent("stop");
-        checkVibration();
-    });
-    
-    // События для мышки (тесты на ПК)
-    touchPad.addEventListener('mousedown', () => {
-        iamTouching = true;
-        sendTouchEvent("start");
-        checkVibration();
-    });
-
-    touchPad.addEventListener('mouseup', () => {
-        iamTouching = false;
-        sendTouchEvent("stop");
-        checkVibration();
-    });
+    // Тач-события
+    touchPad.addEventListener('touchstart', (e) => { e.preventDefault(); iamTouching = true; sendTouchEvent("start"); checkVibration(); });
+    touchPad.addEventListener('touchend', (e) => { e.preventDefault(); iamTouching = false; sendTouchEvent("stop"); checkVibration(); });
+    touchPad.addEventListener('mousedown', () => { iamTouching = true; sendTouchEvent("start"); checkVibration(); });
+    touchPad.addEventListener('mouseup', () => { iamTouching = false; sendTouchEvent("stop"); checkVibration(); });
 </script>
-
 </body>
 </html>
