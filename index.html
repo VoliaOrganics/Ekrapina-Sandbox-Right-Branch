@@ -4,21 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Open Touch</title>
-    <!-- Подключаем библиотеку Paho MQTT через HTTPS -->
-    <script src="https://cloudflare.com" type="text/javascript"></script>
+    <!-- Подключаем библиотеку Paho MQTT -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js" type="text/javascript"></script>
     <style>
         * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #121214;
-            color: #ffffff;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            overflow: hidden;
+            background: #121214; color: #ffffff; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; min-height: 100vh; margin: 0; overflow: hidden;
         }
         .container { text-align: center; width: 90%; max-width: 400px; padding: 20px; }
         h1 { font-size: 28px; font-weight: 800; margin-bottom: 5px; color: #ff4a75; letter-spacing: -0.5px; }
@@ -33,21 +26,17 @@
         button {
             width: 100%; padding: 15px; border-radius: 10px; border: none;
             background: #ff4a75; color: white; font-size: 16px; font-weight: bold; cursor: pointer;
-            transition: background 0.2s;
         }
         button:active { background: #e03e64; }
-        
         .touch-zone {
             display: none; width: 220px; height: 220px; border-radius: 50%;
             background: radial-gradient(circle, #ff4a75 0%, #b5179e 100%);
             margin: 40px auto; box-shadow: 0 0 35px rgba(255, 74, 117, 0.4);
             justify-content: center; align-items: center; font-size: 20px; font-weight: bold;
-            transition: transform 0.1s, box-shadow 0.1s;
-            touch-action: none; cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s; touch-action: none; cursor: pointer;
         }
         .touch-zone.active {
-            transform: scale(0.96);
-            box-shadow: 0 0 60px #00fff0, inset 0 0 25px rgba(255,255,255,0.5);
+            transform: scale(0.96); box-shadow: 0 0 60px #00fff0, inset 0 0 25px rgba(255,255,255,0.5);
             background: radial-gradient(circle, #00fff0 0%, #0077b6 100%);
         }
         .status { color: #8e8e93; font-size: 16px; min-height: 24px; font-weight: 500; }
@@ -76,7 +65,6 @@
 </div>
 
 <script>
-    // Генерация случайного 5-значного ID
     const myRoomCode = Math.floor(10000 + Math.random() * 90000).toString();
     document.getElementById('my-code').innerText = myRoomCode;
 
@@ -84,13 +72,22 @@
     let currentTopic = "";
     let isConnected = false;
 
+    // Список серверов (Основной и Резервный)
+    const brokers = [
+        { host: "broker.hivemq.com", port: 8884, path: "/mqtt" },
+        { host: "broker.emqx.io", port: 8084, path: "/mqtt" }
+    ];
+    let currentBrokerIndex = 0;
+
     function initMQTT(roomCode) {
         currentTopic = "opentouch/room/" + roomCode;
         document.getElementById('setup-screen').style.display = 'none';
         document.getElementById('interaction-screen').style.display = 'block';
         
-        // Исправлено: подключаемся по защищенному протоколу WSS через порт 8884
-        mqttClient = new Paho.MQTT.Client("broker.hivemq.com", 8884, "client_" + Math.random().toString(36).substring(7));
+        const broker = brokers[currentBrokerIndex];
+        console.log("Подключение к серверу: " + broker.host);
+        
+        mqttClient = new Paho.Client(broker.host, broker.port, broker.path, "client_" + Math.random().toString(36).substring(7));
         
         mqttClient.onConnectionLost = (responseObject) => {
             document.getElementById('status-text').innerText = "Потеря связи. Переподключение...";
@@ -115,10 +112,13 @@
                 isConnected = true;
             },
             onFailure: (err) => {
-                document.getElementById('status-text').innerText = "Ошибка сервера. Пробуем снова...";
-                setTimeout(() => initMQTT(roomCode), 2000);
+                console.log("Ошибка подключения к " + broker.host, err);
+                // Если первый сервер не ответил, переключаемся на резервный
+                currentBrokerIndex = (currentBrokerIndex + 1) % brokers.length;
+                document.getElementById('status-text').innerText = "Смена сервера связи...";
+                setTimeout(() => initMQTT(roomCode), 1500);
             },
-            useSSL: true, // Включаем SSL-шифрование, чтобы работало на GitHub Pages
+            useSSL: true,
             timeout: 5
         });
     }
@@ -129,7 +129,6 @@
             alert("Пожалуйста, введите ID другого пользователя!");
             return;
         }
-        // Создаем общий уникальный канал на основе двух кодов
         const finalRoom = myRoomCode < partnerCode ? myRoomCode + partnerCode : partnerCode + myRoomCode;
         initMQTT(finalRoom);
     }
@@ -140,7 +139,7 @@
 
     function sendTouchEvent(actionType) {
         if (!isConnected) return;
-        const message = new Paho.MQTT.Message(JSON.stringify({
+        const message = new Paho.Message(JSON.stringify({
             sender: myRoomCode,
             action: actionType
         }));
@@ -165,7 +164,7 @@
             document.getElementById('status-text').innerText = "Пользователь касается экрана! Ответьте ему!";
             touchPad.classList.add('active');
             stopVibrationLoop();
-            if (navigator.vibrate) navigator.vibrate(80); // Легкий импульс уведомления
+            if (navigator.vibrate) navigator.vibrate(80);
         } else {
             document.getElementById('status-text').innerText = "Ожидание прикосновения...";
             touchPad.classList.remove('active');
@@ -177,9 +176,9 @@
     function startVibrationLoop() {
         if (vibInterval) clearInterval(vibInterval);
         if (navigator.vibrate) {
-            navigator.vibrate([150, 100, 150]); // Имитация биения сердца
+            navigator.vibrate(200); 
             vibInterval = setInterval(() => {
-                navigator.vibrate([150, 100, 150]);
+                navigator.vibrate(200);
             }, 1000);
         }
     }
@@ -189,7 +188,7 @@
         if (navigator.vibrate) navigator.vibrate(0);
     }
 
-    // Обработка тач-событий для мобильных устройств
+    // События для мобилок
     touchPad.addEventListener('touchstart', (e) => {
         e.preventDefault();
         iamTouching = true;
@@ -204,7 +203,7 @@
         checkVibration();
     });
     
-    // Поддержка кликов мышки для проверки с компьютера
+    // События для мышки (тесты на ПК)
     touchPad.addEventListener('mousedown', () => {
         iamTouching = true;
         sendTouchEvent("start");
